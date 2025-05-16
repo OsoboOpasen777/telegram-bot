@@ -4,6 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import asyncio
 import json
 import os
+from datetime import datetime
 
 # Токен бота
 TOKEN = '7999621432:AAHXPeZhdwikdek7IWzQ_8k-YRvLfWtwTmQ'
@@ -23,10 +24,15 @@ def save_users(users):
 # Пользователи с ролями
 users = load_users()
 
-# Кнопки меню
+# Список пользователей для времени
+active_time_users = set()
+
+# Кнопки меню с регистрацией и времени
 def main_menu():
     keyboard = [[InlineKeyboardButton("Моя роль", callback_data='role')],
-               [InlineKeyboardButton("Добавить пользователя", callback_data='adduser')]]
+               [InlineKeyboardButton("Зарегистрироваться", callback_data='register')],
+               [InlineKeyboardButton("Получать время", callback_data='start_time')],
+               [InlineKeyboardButton("Остановить время", callback_data='stop_time')]]
     return InlineKeyboardMarkup(keyboard)
 
 # Функция старта
@@ -36,42 +42,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         role = users[chat_id]["role"]
         await update.message.reply_text(f"Привет, {users[chat_id]['name']}! Твоя роль: {role}.", reply_markup=main_menu())
     else:
-        await update.message.reply_text("Привет! Ты ещё не зарегистрирован. Управляющий может добавить тебя.", reply_markup=main_menu())
+        await update.message.reply_text("Привет! Ты ещё не зарегистрирован. Нажми кнопку 'Зарегистрироваться' ниже.", reply_markup=main_menu())
 
-# Обработка нажатий на кнопки
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Регистрация пользователя через кнопку
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == 'role':
-        chat_id = str(query.message.chat_id)
-        role = users.get(chat_id, {}).get("role", "неизвестная роль")
-        await query.edit_message_text(f"Твоя роль: {role}", reply_markup=main_menu())
-    elif query.data == 'adduser':
-        await query.edit_message_text("Использование: /adduser <ID> <Имя> <Роль>", reply_markup=main_menu())
-
-# Добавление нового пользователя (только управляющий)
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    if users.get(chat_id, {}).get("role") == "управляющий":
-        if len(context.args) == 3:
-            user_id, name, role = context.args
-            users[user_id] = {"name": name, "role": role}
+    chat_id = str(query.from_user.id)
+    username = query.from_user.username or query.from_user.first_name or 'Пользователь'
+    if query.data == 'register':
+        if chat_id not in users:
+            users[chat_id] = {"name": username, "role": "пользователь"}
             save_users(users)
-            await update.message.reply_text(f"Пользователь {name} с ролью {role} добавлен!", reply_markup=main_menu())
+            await query.message.reply_text(f"Ты успешно зарегистрирован как {username}.")
         else:
-            await update.message.reply_text("Использование: /adduser <ID> <Имя> <Роль>", reply_markup=main_menu())
-    else:
-        await update.message.reply_text("У вас нет прав на добавление пользователей.", reply_markup=main_menu())
+            await query.message.reply_text(f"Ты уже зарегистрирован как {users[chat_id]['name']}.")
+    elif query.data == 'role':
+        role = users.get(chat_id, {}).get("role", "неизвестная роль")
+        await query.message.reply_text(f"Твоя роль: {role}")
+    elif query.data == 'start_time':
+        active_time_users.add(chat_id)
+        await query.message.reply_text("Теперь ты будешь получать текущее время каждые 5 секунд.")
+    elif query.data == 'stop_time':
+        active_time_users.discard(chat_id)
+        await query.message.reply_text("Оповещения с временем остановлены.")
 
-# Настройка планировщика
+# Функция для отправки текущего времени
+async def send_time():
+    current_time = datetime.now().strftime('%H:%M:%S')
+    for chat_id in active_time_users:
+        await app.bot.send_message(chat_id=chat_id, text=f"Текущее время: {current_time}")
+
+# Настройка планировщика для отправки времени каждые 5 секунд
 scheduler = BackgroundScheduler()
+scheduler.add_job(lambda: asyncio.run(send_time()), 'interval', seconds=5)
 scheduler.start()
 
 # Создание приложения
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("adduser", add_user))
-app.add_handler(CallbackQueryHandler(button))
+app.add_handler(CallbackQueryHandler(handle_button))
 
 print("Бот запущен...")
 app.run_polling()
